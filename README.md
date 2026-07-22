@@ -128,8 +128,8 @@ A small overlap is carried from the end of one chunk into the start of the next,
 | Environment | Chunks embedded | Total time | Rate |
 |---|---|---|---|
 | CPU (Colab default) | 5,000 (sample) | 165.37 seconds | 30.23 chunks/sec |
-| GPU (Colab T4) | 5,000 (sample) | 3.18 seconds | 1,352.58 chunks/sec |
-| GPU (Colab T4) | 30,507 (full dataset) | 17.57 seconds | 1,736.80 chunks/sec |
+| GPU (Colab T4) | 5,000 (sample) | 3.18 seconds | 1574.26 chunks/sec |
+| GPU (Colab T4) | 30,507 (full dataset) | 20.50 seconds | 1,736.80 chunks/sec |
 
 **Key finding:** switching Colab's runtime to a free T4 GPU gave roughly a **45x speedup** over CPU for the same workload. At this dataset's scale, GPU embedding is effectively instantaneous (under 20 seconds for all 30,507 chunks), while CPU alone would take nearly 3 minutes and would become a real bottleneck at larger scale.
 
