@@ -191,5 +191,120 @@ A small overlap is carried from the end of one chunk into the start of the next,
 - Only the comments dataset was chunked and embedded this week; posts are not yet part of the search index.
 - The excessively-long-query edge case was implemented but not explicitly exercised with a real oversized input during this week's testing.
 
+---
+
+## Week 3: LLM Integration, Prompt Engineering & Robust RAG
+
+This week's goal was to complete the RAG (Retrieval-Augmented Generation) pipeline started in Week 2 — taking the semantic search system built last week and connecting it to an actual LLM, so the system can generate real, grounded answers from retrieved Reddit comments instead of just returning raw search results.
+
+### Pipeline Overview
+
+Query → semantic search retrieves relevant chunks (Week 2) → domain check confirms the query is actually answerable from this dataset → chunks are injected into a structured prompt → LLM generates an answer → a second LLM call verifies the answer is grounded in the retrieved context → the full process is timed stage-by-stage.
+
+---
+
+### Task 1: Integrating the LLM API (OpenRouter)
+
+**Setup:** created an OpenRouter account and API key. The key was stored securely using Colab's built-in Secrets manager (accessible via the key icon in the sidebar) rather than hardcoded into the notebook, so it's never exposed if the notebook is pushed to a public GitHub repo.
+
+**Error encountered #1 — 404 on the initial model choice:**
+The first attempt used `deepseek/deepseek-chat-v3.1:free` as the model, which returned a `404` error. Research confirmed this wasn't a bug on our end — DeepSeek had removed all free-tier models from OpenRouter entirely by the time of this session (a change that happened sometime after many tutorials/guides referencing that model ID were written). This is a good example of why hardcoding a specific "free" model ID long-term is risky — the free model roster on OpenRouter changes frequently.
+
+**Fix:** queried OpenRouter's own live model-listing endpoint directly from the notebook (`GET /api/v1/models`), filtered to models with $0 pricing on both input and output, and picked from that real, current list rather than trusting a hardcoded name from documentation. Landed on **`openai/gpt-oss-20b:free`** — a genuine OpenAI open-weight model, general-purpose (not code- or audio-specialized like several other free options available), and a good balance of quality vs. rate-limit risk.
+
+**Basic API call implementation:** built a `call_llm()` function that sends a list of `{"role": ..., "content": ...}` messages to OpenRouter's chat completions endpoint and returns the raw response. Verified working with a simple test message (status 200, correct reply).
+
+---
+
+### Task 2: Prompt Engineering & Context Injection
+
+**System prompt design:** implemented a system prompt that explicitly instructs the model to:
+- Answer using *only* the provided Reddit comments (no outside knowledge)
+- Clearly state when the context doesn't contain enough information, rather than guessing
+- Cite which comment(s) informed each part of the answer
+
+**Context injection:** built a `build_rag_prompt()` function that takes a user query and a list of retrieved chunks (from Week 2's `semantic_search`), formats the chunks as a bulleted context block, and combines them with the query into a user message — paired with the system prompt above.
+
+**Result:** tested end-to-end with the query *"is AI going to replace programmers"*. The model correctly synthesized an answer using only the retrieved comments, explicitly referencing "Comment 1," "Comment 4," etc. — confirming the context injection and citation instruction both worked as intended, rather than the model falling back on its own general training knowledge.
+
+---
+
+### Task 3: Robust Error Handling for API Calls
+
+Built `call_llm_safe()` to replace the basic `call_llm()`, handling the specific failure modes an LLM API can produce:
+
+| Failure case | Handling |
+|---|---|
+| Rate limiting (HTTP 429) | Retries with increasing wait time between attempts (5s, 10s, 15s), up to 3 attempts, instead of failing immediately |
+| Token/context limit exceeded (HTTP 400) | Detected and surfaced as a clear, readable error message rather than a cryptic failure |
+| Network timeout | Caught and retried, rather than crashing the whole pipeline |
+| Other unexpected connection errors | Caught and returned as a descriptive error instead of an unhandled exception |
+| Max retries exhausted | Returns a clear "giving up" message rather than hanging indefinitely |
+
+**This was validated for real, not just in theory:** during later end-to-end latency testing, a genuine `429` rate-limit response was hit organically (visible in the logs as *"Rate limited. Waiting 5s before retry (1/3)..."*), and the retry logic successfully recovered and completed the request on the next attempt — confirming the error handling works under real conditions, not just hypothetical ones.
+
+---
+
+### Task 4: Hallucination Checks & Out-of-Domain Query Handling
+
+**Out-of-domain detection:** implemented `is_query_in_domain()`, which uses ChromaDB's own distance scores (already available from the retrieval step) to judge whether a query is even relevant to this dataset before attempting to answer it.
+
+**Error encountered #2 — incorrectly rejecting valid queries:**
+The first version used a similarity threshold of `0.35`, chosen without evidence. This caused *every* query — including clearly relevant ones like "is AI going to replace programmers" — to be incorrectly flagged as out-of-domain and rejected.
+
+**Fix — calibrated the threshold using real data instead of a guess:** printed the actual ChromaDB distance scores for a known in-domain query versus a known out-of-domain query:
+- In-domain query ("AI replace programmers") → distances clustered around **0.55–0.58**
+- Out-of-domain query ("capital of France") → distances clustered around **1.17–1.38**
+
+This revealed a clear, wide gap between the two clusters. The threshold was updated to **0.8**, sitting safely in that gap. Re-testing confirmed both cases now behave correctly: the in-domain query is answered normally, and the out-of-domain query is correctly rejected before any LLM call is made — this is documented in the code as a comment explaining exactly where the number came from, rather than leaving it as an unexplained "magic number."
+
+**Hallucination checking:** implemented `check_hallucination()` using an **LLM-as-judge** approach — a second, separate LLM call given the original context and the generated answer, instructed to respond with only `GROUNDED` or `UNGROUNDED` depending on whether every claim in the answer is actually supported by the context. This is a widely used practical technique, though not a perfect guarantee (an LLM checking itself has inherent limits) — noted here as an honest limitation, not oversold as foolproof.
+
+**Full pipeline (`rag_answer`) combining both:** retrieves chunks → checks domain relevance (short-circuits with a clear message if irrelevant, without wasting an LLM call) → generates an answer if relevant → runs the hallucination check on the result.
+
+**Verified results after the threshold fix:**
+- In-domain query → real synthesized answer returned, hallucination check independently returned `GROUNDED`
+- Out-of-domain query ("what is the capital of France") → correctly rejected with a clear explanation, no LLM call attempted
+
+---
+
+### Task 5: End-to-End Latency Measurement & Logging
+
+Built `rag_answer_with_latency()` to time each stage of the pipeline separately (not just the total), so it's clear *where* time is actually being spent rather than treating the whole pipeline as one black box.
+
+**Real results from testing three queries:**
+
+| Query | Retrieval | Domain check | Generation | Hallucination check | Total |
+|---|---|---|---|---|---|
+| "is AI going to replace programmers" | 33.64 ms | 11.42 ms | 32,707.18 ms | 6,010.50 ms | 38,762.73 ms |
+| "how good is Google's AI model" | 10.33 ms | 7.80 ms | 12,383.10 ms | 26,520.87 ms | 38,922.11 ms |
+| "what is the capital of France" (out-of-domain) | 10.51 ms | 7.86 ms | — (skipped) | — (skipped) | 18.37 ms |
+
+**Key finding:** retrieval and domain-checking are essentially instantaneous (under 35ms combined), and are not a bottleneck anywhere in this pipeline. The overwhelming majority of end-to-end latency — often 30+ seconds — comes from the two LLM calls (generation and hallucination checking), which is the expected cost of using a free, shared, rate-limited model tier rather than a paid, dedicated one.
+
+**A genuine rate-limit event was captured live during this test** (visible in the console output as a retry message), demonstrating the Task 3 error handling working under real conditions rather than only in isolated testing.
+
+**Important design observation worth noting:** the hallucination check roughly doubles the slowest part of the pipeline's cost, since it requires a full second LLM call on top of generation. For a production system, this suggests the hallucination check could reasonably be made optional, or only triggered for lower-confidence answers, rather than run unconditionally on every single query — a real tradeoff between reliability and speed that this latency data made visible.
+
+---
+
+### Summary of Week 3 Results
+
+| Metric | Value |
+|---|---|
+| LLM used | `openai/gpt-oss-20b:free` (via OpenRouter) |
+| Domain-check threshold | 0.8 (calibrated from real distance data) |
+| Retrieval + domain check latency | ~10-45 ms combined |
+| Generation latency (typical) | ~12-33 seconds (free-tier model) |
+| Hallucination check latency (typical) | ~6-27 seconds |
+| Out-of-domain queries | Correctly short-circuited in under 20ms, no LLM call made |
+
+### Known Limitations
+
+- The free LLM tier used here is noticeably slow (12-33 seconds per generation) and subject to rate limiting; a paid tier or a different provider would be needed for a production-grade response time.
+- The hallucination check is an LLM-as-judge heuristic, not a guaranteed detector — it can itself be wrong, and roughly doubles total latency when enabled.
+- The domain-check threshold (0.8) was calibrated using only two example queries; a larger, more varied test set would give a more robust threshold.
+- API key is currently used via Colab Secrets for local development; a deployed version would need a proper secrets-management setup (e.g. environment variables on the hosting platform).
+
 
 
