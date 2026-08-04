@@ -81,6 +81,7 @@ This makes sense for r/artificial — heavy repetition of "ai," "model(s)," and 
 - Bot filtering only excludes `AutoModerator` by exact username. No AutoModerator comments happened to appear in this specific subreddit/date window, so this filter had no visible effect here — it's kept in for robustness on future runs where it may matter more, and other bot accounts could be added to the filter list if spotted.
 - Tokenization/corpus stats are computed on a 2,000-comment random sample rather than the full cleaned dataset, for speed. The full dataset can be tokenized later if more precise stats are needed.
 
+---
 
 ## Week 2: Chunking, Embeddings & Semantic Search
 
