@@ -308,4 +308,113 @@ Built `rag_answer_with_latency()` to time each stage of the pipeline separately 
 - API key is currently used via Colab Secrets for local development; a deployed version would need a proper secrets-management setup (e.g. environment variables on the hosting platform).
 
 
+## Week 4: Topic Modeling, Sentiment Analysis & Metadata-Enhanced Retrieval
+
+This week's goal was to add semantic *understanding* on top of the Week 2/3 retrieval and generation pipeline — discovering themes across the dataset, tagging emotional tone, and using both to enable filtered search.
+
+### Task 1: Topic Modeling (BERTopic)
+
+**Approach:** used BERTopic, reusing the same `all-MiniLM-L6-v2` embedding model from Week 2 so topics live in the same semantic space as the search system, rather than introducing a separate model.
+
+**Initial result:** BERTopic discovered clean, coherent topics (LLM discussion, image/video generation, gaming, AI consciousness debate, stock/finance, math tools, AI-job-replacement, US-China chip competition, Google scam calls, and more) — but **52% of all comments (9,527 of 18,397) fell into the "-1" unclustered/outlier bucket**, more than every real topic combined.
+
+**Diagnosis (validated, not assumed):** the first hypothesis was that outliers were simply short, low-content comments. This was checked directly against the data and **disproven** — outlier comments averaged 282 characters versus 267 for clustered comments, essentially the same length. The real cause is that BERTopic's default clustering algorithm (HDBSCAN) is density-based: it only forms a topic when enough documents pack tightly together, and Reddit's wide topic diversity leaves many legitimate, substantive comments too spread out to meet that density bar, even though they aren't low-quality.
+
+**Fix:** applied `topic_model.reduce_outliers(..., strategy="embeddings")`, which reassigns each outlier to its nearest real topic by embedding similarity rather than leaving it unclustered. This reduced outliers from 9,527 to **0**, with topic sizes becoming much more balanced (roughly 100–450 comments per topic instead of one dominant catch-all bucket).
+
+### Task 2: Sentiment Analysis (with manual accuracy evaluation)
+
+**Model used:** `cardiffnlp/twitter-roberta-base-sentiment-latest`, chosen specifically because it's trained on social-media text, which generalizes better to Reddit's informal style than a model trained on, say, product/movie reviews.
+
+**Full dataset run:** sentiment computed for all 18,397 comments in 447.92 seconds (~41 comments/sec on GPU).
+
+| Sentiment | Count | % |
+|---|---|---|
+| Neutral | 8,751 | 47.6% |
+| Negative | 6,979 | 37.9% |
+| Positive | 2,667 | 14.5% |
+
+**Manual accuracy evaluation:** a random sample of 30 comments was manually labeled by hand and compared against the model's predictions.
+
+- **Result: 25/30 correct = 83.3% accuracy**
+- **Error pattern (not random):** all 5 misclassifications were the model over-predicting "negative" — 3 cases of true-neutral text called negative, 2 cases of true-positive text called negative. Zero errors in the opposite direction. This suggests the model has a directional bias toward "negative" on text that discusses serious/heavy topics (e.g. AI job anxiety) in an otherwise neutral or even hopeful tone — it appears to be picking up on topic weight rather than actual sentiment in some cases.
+
+### Task 3: Manual Validation & Edge Case Handling
+
+Two specific edge cases were tested directly against real data, as required:
+
+**Short documents (<20 characters, 974 comments in the dataset):** mixed results. Some short comments correctly clustered into sensible micro-topics that emerged naturally from the data itself — e.g. a "yes/nope/uh" affirmation-topic and a "lol/lmao/haha" reaction-topic. However, some short comments (e.g. "You broke the image") were forced into unrelated, nonsensical topics purely because there wasn't enough content to disambiguate meaning. This is an honest, documented limitation rather than a fully solved problem.
+
+**Jargon-heavy technical comments (54 comments containing terms like "VRAM," "hyperparameter," "quantization," etc.):** performed well — these consistently clustered into coherent, correctly-scoped technical topics (VRAM/hardware discussion, Ollama/llama.cpp discussion, RAG/vector-DB discussion), showing the embedding model handles domain-specific ML jargon better than it handles very short, low-context text.
+
+**Metadata integration bug (caught and fixed):** the first attempt at attaching topic/sentiment metadata to ChromaDB chunks silently failed — every single chunk showed `topic: -1, sentiment: 'unknown'`. Root cause: the lookup dictionaries were built using integer row positions as keys, while `chunk_sources` (from Week 2) stores actual Reddit comment IDs — so every lookup missed and fell back to the default value. Fixed by rebuilding the lookup dictionaries keyed on the real comment ID (`dict(zip(comments_clean["id"], comments_clean["topic"]))`), which resolved all 30,508 chunks correctly (0 unmatched).
+
+### Task 4: Integrating Metadata into ChromaDB for Filtered Retrieval
+
+Both `topic` (integer topic number) and `sentiment` (positive/negative/neutral) were attached as metadata to every one of the 30,508 chunks already stored in ChromaDB from Week 2, using `collection.update(ids=..., metadatas=...)` in batches of 5,000.
+
+A `filtered_semantic_search()` function was built on top of the existing Week 2 search, adding an optional `where` clause so results can be narrowed by sentiment and/or topic *before* ranking by semantic similarity.
+
+**Demonstrated result** for the query *"AI replacing jobs"*:
+- **Unfiltered:** general mix of comments about AI and job displacement
+- **Negative-filtered:** comments framing AI job displacement as a crisis (e.g. concerns about lost purpose, lack of UBI, inadequate legislation)
+- **Positive-filtered:** comments framing the same topic pragmatically/optimistically (e.g. productivity gains, transition planning)
+
+This confirms the metadata isn't just attached but functionally useful — the same query returns meaningfully different, correctly-filtered result sets depending on the emotional lens requested.
+
+### Problems Encountered This Week (Chronological)
+
+Five distinct issues came up during this week's work. Each is documented here with what went wrong, how it was diagnosed, and how it was fixed — not just the two most significant ones, but every real problem hit along the way.
+
+**Problem 1: 52% of comments left unclustered by BERTopic**
+
+- **Symptom:** after the initial `fit_transform()` run, topic `-1` (BERTopic's "outlier/unclustered" bucket) contained 9,527 of 18,397 comments — more than every real topic combined.
+- **First hypothesis (wrong):** assumed outlier comments were simply short, low-content text that didn't give the clustering algorithm enough to work with.
+- **Diagnosis:** tested the hypothesis directly instead of accepting it — compared average character length of outlier vs. clustered comments. Outliers averaged 282 characters, clustered comments averaged 267 — essentially the same, disproving the "short comments" theory.
+- **Real cause:** BERTopic's default clustering algorithm (HDBSCAN) is density-based — it only forms a topic when documents pack tightly enough together. Reddit's wide topic diversity means many legitimate, substantive comments are too spread out in embedding space to meet that density threshold, even though they aren't low-quality.
+- **Fix:** used `topic_model.reduce_outliers(..., strategy="embeddings")` to reassign every outlier to its nearest real topic by embedding similarity. Outliers went from 9,527 to 0, and topic sizes became much more balanced (roughly 100–450 per topic).
+
+**Problem 2: CUDA crash during sentiment analysis (`AcceleratorError: device-side assert triggered`)**
+
+- **Symptom:** running the sentiment pipeline on a 2,000-comment sample crashed with a CUDA-level error, even though `truncation=True` was already set.
+- **Diagnosis:** `truncation=True` alone doesn't guarantee a safe cutoff length on every tokenizer — some report an unreasonably large "max length" internally, so truncation effectively did nothing, and a comment exceeding the model's real position limit crashed the GPU at the hardware level.
+- **Fix, attempt 1:** added `max_length=512` explicitly to force a real cutoff. This is the correct fix in principle, but running it immediately after the crash **still failed with the identical error** — because a CUDA "device-side assert" leaves the GPU session itself corrupted; no amount of code-level fixing works until the runtime is genuinely restarted.
+- **Fix, attempt 2 (the real fix):** restarted the Colab runtime (Runtime → Restart session), confirmed the restart actually took effect by checking that `sentiment_pipeline` no longer existed in memory (the first restart attempt silently failed to take effect — see Problem 3), then re-ran the corrected code with `max_length=512` on a clean GPU session. This worked cleanly: 2,000 comments in 36.04 seconds.
+
+**Problem 3: Colab restart appeared to not take effect**
+
+- **Symptom:** after clicking "Restart session" and re-running the sentiment cell, the exact same CUDA crash happened again — suggesting the restart hadn't actually cleared anything.
+- **Diagnosis:** added a one-line check — `try: print(sentiment_pipeline) except NameError: print("gone")` — to directly verify whether the old pipeline object still existed in memory. It did, confirming the restart genuinely hadn't taken effect (rather than assuming and re-guessing at code fixes).
+- **Fix:** explicitly restarted again and waited for Colab's connection indicator to fully cycle (disconnect then reconnect) before running anything else, then confirmed with the same check before proceeding. Once confirmed clean, the `max_length=512` fix worked as expected.
+
+**Problem 4: Sentiment analysis on the full dataset felt like it was hanging**
+
+- **Symptom:** running sentiment across all 18,397 comments produced no visible output for several minutes, making it unclear whether the process was working or stuck.
+- **Diagnosis:** the base `pipeline()` call doesn't print any progress by default, so a genuinely-running multi-minute job looks identical to a frozen one from the outside.
+- **Fix:** rewrote the loop using `tqdm` to wrap the batches with a live progress bar, and increased batch size from 64 to 128 for better GPU throughput. The full run completed in 447.92 seconds (~41 comments/sec) with visible progress throughout, confirming it had been working correctly the whole time — this was a visibility problem, not an actual bug.
+
+**Problem 5: All chunk metadata silently defaulted to `topic: -1, sentiment: 'unknown'`**
+
+- **Symptom:** after attaching topic/sentiment metadata to all 30,508 ChromaDB chunks, a spot-check of the sample metadata showed every single entry was the fallback default, not a real value — despite the code running without any errors.
+- **Diagnosis:** `chunk_sources` (built back in Week 2) stores each chunk's original Reddit comment ID (a string) as its source reference. The metadata lookup dictionaries, however, were built using `.to_dict()` on a reset dataframe index, which uses integer row positions as keys instead — so every lookup like `topic_lookup.get("op1cly9", -1)` failed to find a match and silently fell back to the default, with no error thrown to signal the mismatch.
+- **Fix:** rebuilt both lookup dictionaries keyed on the actual comment ID column — `dict(zip(comments_clean["id"], comments_clean["topic"]))` — matching the key type that `chunk_sources` actually contains. Re-ran the metadata attachment; confirmed 0 unmatched chunks out of 30,508, and spot-checked sample metadata to verify real topic numbers and sentiment labels were now present.
+
+
+
+| Metric | Value |
+|---|---|
+| Topics discovered (after outlier reduction) | 15+ coherent topics, 0 unclustered |
+| Outliers before fix | 9,527 (52% of dataset) |
+| Outliers after fix | 0 |
+| Sentiment analysis coverage | All 18,397 comments |
+| Manual evaluation accuracy | 83.3% (25/30) |
+| Chunks with metadata attached | 30,508 (100%, after bug fix) |
+
+### Known Limitations
+
+- Sentiment model shows a directional bias toward "negative" on emotionally-neutral text about serious topics — worth accounting for when interpreting sentiment distributions, rather than treating them as fully objective.
+- Very short comments (<20 characters) can still be assigned to topics that don't meaningfully reflect their content, since there's often too little signal to disambiguate.
+- The manual evaluation set (30 comments) is small; a larger labeled set would give a more statistically reliable accuracy estimate.
+- Topic numbers are stable only within a given BERTopic run — re-fitting the model (e.g. with new data) would require re-attaching metadata to ChromaDB.
+
 
