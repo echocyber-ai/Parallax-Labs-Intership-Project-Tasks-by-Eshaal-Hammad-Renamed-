@@ -417,4 +417,4 @@ Five distinct issues came up during this week's work. Each is documented here wi
 - The manual evaluation set (30 comments) is small; a larger labeled set would give a more statistically reliable accuracy estimate.
 - Topic numbers are stable only within a given BERTopic run — re-fitting the model (e.g. with new data) would require re-attaching metadata to ChromaDB.
 
-
+### NOTE: FEW CHANGES IN CODE CAN BE SEEN IN TIME DUE TO RERUNNING IT SEVERAL TIMES!
