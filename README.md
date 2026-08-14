@@ -307,7 +307,7 @@ Built `rag_answer_with_latency()` to time each stage of the pipeline separately 
 - The domain-check threshold (0.8) was calibrated using only two example queries; a larger, more varied test set would give a more robust threshold.
 - API key is currently used via Colab Secrets for local development; a deployed version would need a proper secrets-management setup (e.g. environment variables on the hosting platform).
 
-
+---
 ## Week 4: Topic Modeling, Sentiment Analysis & Metadata-Enhanced Retrieval
 
 This week's goal was to add semantic *understanding* on top of the Week 2/3 retrieval and generation pipeline — discovering themes across the dataset, tagging emotional tone, and using both to enable filtered search.
