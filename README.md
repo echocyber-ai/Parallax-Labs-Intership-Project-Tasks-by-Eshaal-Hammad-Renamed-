@@ -463,3 +463,5 @@ This week focused on productionizing the RAG pipeline by wrapping it in a robust
 - `test_out_of_domain_handling`: PASSED
 - `test_500_downstream_failure`: PASSED (Using `unittest.mock.patch` to enforce server failures).
 - **Result**: 7/7 tests passed (100% success rate).
+
+  ### NOTE: THERE CAN BE SOME CHANGES IN RESULTS DUE TO RUNNING SEVERAL TIMES.
