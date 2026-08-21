@@ -418,3 +418,48 @@ Five distinct issues came up during this week's work. Each is documented here wi
 - Topic numbers are stable only within a given BERTopic run — re-fitting the model (e.g. with new data) would require re-attaching metadata to ChromaDB.
 
 ### NOTE: FEW CHANGES IN CODE CAN BE SEEN IN TIME DUE TO RERUNNING IT SEVERAL TIMES!
+
+
+---
+
+## Week 5: API Wrapper, Final Testing & Evaluation
+
+This week focused on productionizing the RAG pipeline by wrapping it in a robust FastAPI service, adding structured logging, and formally evaluating both the retrieval (Precision/Recall) and the generative components.
+
+### 1. API Wrapper (FastAPI)
+- Built `app_v2` with `SearchRequest` and `AskRequest` Pydantic models to validate incoming JSON.
+- **Endpoints**:
+  - `GET /` — Health check.
+  - `POST /search` — Handles direct semantic search, returns top K chunks.
+  - `POST /ask` — Full end-to-end RAG endpoint returning answers and latency stats.
+
+### 2. Logging & Error Handling
+- Set up a structured logger (`rag_api_v2`) tracking timestamps, endpoint paths, latency, and status codes.
+- Added a global exception handler to trap validation errors and return `422 Unprocessable Entity`.
+- Added `400 Bad Request` handling for empty queries and `500 Internal Server Error` fallback for unexpected crashes.
+
+### 3. Retrieval Evaluation (Precision@K & Recall@K)
+- Created a hand-labeled test set of 8 distinct queries against our real chunk data.
+- Evaluated the search component natively against ChromaDB:
+  - **K=3**: Precision: 0.708 | Recall: 0.863
+  - **K=5**: Precision: 0.525 | Recall: 0.938
+  - **K=10**: Precision: 0.325 | Recall: 1.000
+- Output successfully written to `eval_retrieval_results.json`.
+
+### 4. Generation Quality & Latency Summary
+- Evaluated end-to-end generation with an in-domain and out-of-domain mix.
+- **Grounded rate**: 100% (Answers were successfully traced back to valid chunks).
+- **Domain-detection accuracy**: 100.0% (Properly rejected unrelated questions like "baking a cake").
+- **Average Latency**: ~835.5ms per query (Retrieval: ~25.1ms, Generation: ~810.4ms).
+- Output successfully written to `eval_generation_results.json`.
+
+### 5. Pytest Pass/Fail Report
+- Pytest suite built in `test_api.py` and run against the live API.
+- `test_root_ok`: PASSED
+- `test_search_endpoint`: PASSED
+- `test_ask_endpoint`: PASSED
+- `test_ask_validation_error`: PASSED
+- `test_ask_empty_query`: PASSED
+- `test_out_of_domain_handling`: PASSED
+- `test_500_downstream_failure`: PASSED (Using `unittest.mock.patch` to enforce server failures).
+- **Result**: 7/7 tests passed (100% success rate).
