@@ -612,4 +612,8 @@ If you are recording a showcase of this project, follow this 5-step script for a
 3. **Show the response + latency:** Point out the JSON response structure. Highlight the `hallucination_check: GROUNDED` field and the detailed latency breakdown in milliseconds.
 4. **Show pytest passing:** Run `!pytest test_api.py -v` in the cell and showcase the terminal output confirming **7/7 tests passed**, specifically noting the `test_500_downstream_failure` mock test.
 5. **Show the eval JSON results:** Briefly open `eval_retrieval_results.json` and `eval_generation_results.json` in your file explorer to prove the evaluation scripts successfully generated physical artifact files with the precision, recall, and latency metrics.
+
+---
+
+## Demo Video Drive Link of Project: https://drive.google.com/file/d/1WGVIBGlm_-FbD3QjROs5hvUJXG8N_Mvv/view?usp=sharing
   ### NOTE: THERE CAN BE SOME CHANGES IN RESULTS DUE TO RUNNING SEVERAL TIMES.
